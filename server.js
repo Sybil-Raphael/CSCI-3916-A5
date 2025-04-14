@@ -6,7 +6,7 @@ const authJwtController = require('./auth_jwt'); // You're not using authControl
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const User = require('./Users');
-const Movie = require('./Movies'); 
+const Movie = require('./Movies'); // You're not using Movie, consider removing it
  
 const app = express();
 app.use(cors());
@@ -34,7 +34,7 @@ router.post('/signup', async (req, res) => { // Use async/await
     await user.save(); // Use await with user.save()
  
     res.status(200).json({ success: true, msg: 'Successfully created new user.' }); // 201 Created
-  } catch (err) {
+  } catch (err  ) {
     if (err.code === 11000) { // Strict equality check (===)
       return res.status(409).json({ success: false, message: 'A user with that username already exists.' }); // 409 Conflict
     } else {
@@ -68,45 +68,64 @@ router.post('/signin', function (req, res) {
     })
 });
  
+router.post('/movies/search', authJwtController.isAuthenticated, async (req, res) => {
+    const { query } = req.body;
+ 
+    if (!query) {
+      return res.status(400).json({ message: 'Search query is required.' });
+    }
+ 
+    try {
+      const movies = await Movie.find({
+        $or: [
+          { title: { $regex: query, $options: 'i' } }, // case-insensitive title match
+          { 'actors.actorName': { $regex: query, $options: 'i' } } // match in actors array
+        ]
+      });
+ 
+      res.status(200).json(movies);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  });
  
 router.route('/movies/:movieId')
   .get(authJwtController.isAuthenticated, async (req, res) => {
-      const id = req.params.movieId;
-      try {
-          let movie;
-          if (req.query.reviews === "true") {
-              const results = await Movie.aggregate([
-                  { $match: { _id: new mongoose.Types.ObjectId(id) } },
-                  {
-                      $lookup: {
-                          from: "reviews",
-                          localField: "_id",
-                          foreignField: "movieId",
-                          as: "reviews"
-                      }
-                  },
-                  {
-                      $addFields: {
-                          avgRating: {
-                              $cond: {
-                                  if: { $gt: [ { $size: "$reviews" }, 0 ] },
-                                  then: { $avg: "$reviews.rating" },
-                                  else: null
-                              }
-                          }
-                      }
-                  }
-              ]);
-              movie = results[0];
-          } else {
-              movie = await Movie.findById(id);
-          }
+    const id = req.params.movieId;
  
-          if (!movie) return res.status(404).json({ message: 'Movie not found.' });
-          res.json(movie);
-      } catch (err) {
-          res.status(500).json({ message: err.message });
+    try {
+      let movie;
+      if (req.query.reviews === "true") {
+        const aggregate = [
+          {
+            $match: { _id: new mongoose.Types.ObjectId(id) } // Convert to ObjectId
+          },
+          {
+            $lookup: {
+              from: 'reviews',
+              localField: '_id',
+              foreignField: 'movieId',
+              as: 'movieReviews'
+            }
+          },
+          {
+            $addFields: {
+              avgRating: { $avg: '$movieReviews.rating' }
+            }
+          }
+        ];
+ 
+        const result = await Movie.aggregate(aggregate);
+        movie = result[0];
+      } else {
+        movie = await Movie.findById(id);
       }
+ 
+      if (!movie) return res.status(404).json({ message: 'Movie not found.' });
+      res.json(movie);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
   });
  
 router.route('/movies')
@@ -164,39 +183,56 @@ router.route('/movies')
  
   router.route('/movies/:movieId')
   .get(authJwtController.isAuthenticated, async (req, res) => {
-    const id = req.params.movieId;  
+    const id = req.params.movieId;
+ 
+    // Check if movieId is a valid ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid movie ID' });
+    }
+ 
     try {
-          const movie = await Movie.findById(req.params.movieId);
-          if (!movie) return res.status(404).json({ message: 'Movie not found.' });
-          res.json(movie);
-      } catch (err) {
-          res.status(500).json({ message: err.message });
+      let movie;
+ 
+      // If reviews=true, use aggregation
+      if (req.query.reviews === "true") {
+        const result = await Movie.aggregate([
+          { $match: { _id: new mongoose.Types.ObjectId(id) } },
+          {
+            $lookup: {
+              from: "reviews",
+              localField: "_id",
+              foreignField: "movieId",
+              as: "movieReviews"
+            }
+          },
+          {
+            $addFields: {
+              avgRating: { $avg: "$movieReviews.rating" }
+            }
+          }
+        ]);
+        movie = result[0];
+      } else {
+        // Regular findById for simple fetch
+        movie = await Movie.findById(id);
       }
+ 
+      if (!movie) {
+        return res.status(404).json({ message: 'Movie not found.' });
+      }
+ 
+      res.json(movie);
+    } catch (err) {
+      console.error('Error fetching movie:', err);
+      res.status(500).json({ message: err.message });
+    }
   })
-  .post(authJwtController.isAuthenticated, async (req, res) => {
-      try {
-          const movie = await Movie.findByIdAndUpdate(req.params.movieId, req.body, { new: true });
-          if (!movie) return res.status(404).json({ message: 'Movie not found.' });
-          res.json(movie);
-      } catch (err) {
-          res.status(500).json({ message: err.message });
-      }
-  })
-  .delete(authJwtController.isAuthenticated, async (req, res) => {
-      try {
-          const movie = await Movie.findByIdAndDelete(req.params.movieId);
-          if (!movie) return res.status(404).json({ message: 'Movie not found.' });
-          res.json({ message: 'Movie deleted successfully.' });
-      } catch (err) {
-          res.status(500).json({ message: err.message });
-      }
-  });
  
  
   const Review = require('./Reviews');
  
   // Reviews routes
-  router.route('/Reviews')
+  router.route('/reviews')
     // GET all reviews
     .get(authJwtController.isAuthenticated, async (req, res) => {
         try {
@@ -207,22 +243,23 @@ router.route('/movies')
         }
     })
  
-    // POST create new review (JWT protected)
-    .post(authJwtController.isAuthenticated, async (req, res) => {
-        const { movieId, username, review, rating } = req.body;
+// POST create new review (JWT protected)
+.post(authJwtController.isAuthenticated, async (req, res) => {
+  const { movieId, review, rating } = req.body;
+  const username = req.user.username; // secure source of username
  
-        if (!movieId || !review || rating === undefined) {
-            return res.status(400).json({ message: 'movieId, username, review, and rating are required.' });
-        }
+  if (!movieId || !review || rating === undefined) {
+    return res.status(400).json({ message: 'movieId, review, and rating are required.' });
+  }
  
-        try {
-            const newReview = new Review({ movieId, username, review, rating });
-            await newReview.save();
-            res.status(200).json({ message: 'Review created!' });
-        } catch (err) {
-            res.status(500).json({ message: err.message });
-        }
-    });
+  try {
+    const newReview = new Review({ movieId, username, review, rating });
+    await newReview.save();
+    res.status(200).json({ message: 'Review created!' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
  
   // Optional: DELETE a review by ID (JWT protected)
   router.delete('/reviews/:reviewId', authJwtController.isAuthenticated, async (req, res) => {
